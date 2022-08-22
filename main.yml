@@ -1,0 +1,340 @@
+name: Tests, deploys
+
+on:
+  push:
+
+env:
+  SECRET_KEY: ${{ secrets.SECRET_KEY }}
+  SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+  API_GITHUB_TOKEN: ${{ secrets.API_GITHUB_TOKEN }}
+  DEPLOY_URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}/checks
+  CHANNEL: code-review
+
+jobs:
+  job_check_concurents:
+    name: Job for check concurent build with delay
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - run: sleep 20
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+
+  job_python_tests:
+    name: Job for pytest for python code
+    runs-on: self-hosted
+    services:
+      postgres:
+        image: postgres:9.5.20-alpine
+        env:
+          POSTGRES_USER: ubuntu
+          POSTGRES_DB: test
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Decrypt ssh-key file
+        run: ./.github/scripts/key.sh
+      - name: Python appcraft checks
+        uses: docker://rickai/appcraft-python-env
+        env:
+          APP_ENV: testing
+          FLASK_ENV: github_testing
+        with:
+          args: .github/scripts/entrypoint_python_tests.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Python tests"
+
+  job_python_lint:
+    name: Job for check linter for python code
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Decrypt ssh-key file
+        run: ./.github/scripts/key.sh
+      - name: Python appcraft checks
+        uses: docker://rickai/appcraft-python-env
+        env:
+          APP_ENV: testing
+          FLASK_ENV: github_testing
+        with:
+          args: .github/scripts/entrypoint_python_lint.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Python linter check"
+
+  job_python_mypy:
+    name: Job for check mypy for python code
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Decrypt ssh-key file
+        run: ./.github/scripts/key.sh
+      - name: Python appcraft checks
+        uses: docker://rickai/appcraft-python-env
+        env:
+          APP_ENV: testing
+          FLASK_ENV: github_testing
+        with:
+          args: .github/scripts/entrypoint_python_mypy.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Python mypy check"
+
+  job_js_test:
+    name: Tests JS rick
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: JS checks
+        run: DOCKER_BUILDKIT=1 docker build -t rick-js -f Dockerfile.js --target lint .
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Tests JS"
+
+  job_js_build:
+    name: Build JS rick
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: JS build
+        run: DOCKER_BUILDKIT=1 docker build -t rick-js -f Dockerfile.js --target build .
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build JS"
+      - name: Extract results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        run: |
+          run_id=$(docker create rick-js)
+          mkdir -p js/build
+          docker cp $run_id:/app/js/build js/
+          docker rm -v $run_id
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts-js-rick
+          path: js/build
+
+  job_js_screenshoter:
+    name: Tests and build JS screenshoter
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: JS checks and build
+        uses: docker://rickai/appcraft-js-env
+        with:
+          args: .github/scripts/entrypoint_build_js_screenshoter.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Tests or build screenshoter"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts-js-sceenshoter
+          path: screenshoter.tgz
+
+  job_build_go_channels:
+    name: Build go channels
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application go-channels binary
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_channels.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go-channels"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  job_build_go_grabber:
+    name: Build go grabber
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application grabber binary
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_grabber.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go grabber"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  job_build_go_api_v2:
+    name: Build go api-v2
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application api-v2 binary and docs
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_api_v2.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go api-v2"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  job_build_go_data_api:
+    name: Build go data-api
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application data-api binary and docs
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_data_api.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go data-api"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  job_build_go_attribution_service:
+    name: Build go attribution-service
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application attribution-service binary
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_attribution_service.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go attribution-service"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  job_build_go_ch_import:
+    name: Build go ch-import
+    runs-on: [self-hosted, go]
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Build application ch-import binary
+        uses: docker://docker:17.05.0-ce-git
+        with:
+          args: .github/scripts/entrypoint_build_go_ch_import.sh
+      - if: failure()
+        run: .github/scripts/slack_message.sh "failed_job" "Build go ch_import"
+      - name: Save results
+        if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: go/build
+
+  deploy:
+    name: Deploy
+    if: startsWith(github.ref, 'refs/heads/staging-' ) ||  github.ref == 'refs/heads/production'
+    needs:
+      - job_python_tests
+      - job_python_lint
+      - job_python_mypy
+      - job_js_test
+      - job_js_build
+      - job_js_screenshoter
+      - job_build_go_channels
+      - job_build_go_grabber
+      - job_build_go_api_v2
+      - job_build_go_attribution_service
+      - job_build_go_data_api
+      - job_build_go_ch_import
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check concurent deploys or checks
+        run: .github/scripts/check_cuncurent_deploy.py
+      - name: Notify to slack when deploy start
+        run: .github/scripts/slack_message.sh "deploy_start"
+      - name: Download results
+        uses: actions/download-artifact@v1
+        with:
+          name: artifacts
+      - name: Download results
+        uses: actions/download-artifact@v1
+        with:
+          name: artifacts-js-rick
+      - name: Download results
+        uses: actions/download-artifact@v1
+        with:
+          name: artifacts-js-sceenshoter
+      - name: Decrypt ssh-key file
+        run: ./.github/scripts/key.sh
+      - name: Deploy
+        uses: docker://rickai/ansible-dev
+        with:
+          args: .github/scripts/entrypoint_deploy.sh
+      - name: Notify slack on failure
+        if: failure()
+        run: .github/scripts/slack_message.sh "deploy_failed"
+      - name: Notify slack on success
+        run: .github/scripts/slack_message.sh "deploy_success"
+
+  post_test_cypress:
+    name: Cypress tests
+    if: github.ref == 'refs/heads/production'
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: cypress/included:5.2.0
+      options: "--shm-size=2048M"
+    steps:
+      - uses: actions/checkout@v1
+      - name: Run tests
+        run: |
+          npm install --prefix cypress_tests/ mochawesome mochawesome-merge mochawesome-report-generator cypress-xpath
+          apt install -y python3-requests
+          cypress run -P cypress_tests --browser chrome
+      - name: Send message with result
+        if: failure() || success()
+        run: |
+          CHANNEL=status-production
+          python3.7 cypress_tests/cypress/scripts/slack.py
+      - name: Save test results
+        if: failure()
+        uses: actions/upload-artifact@v2
+        with:
+          name: cypress_test_results
+          path: |
+            cypress_tests/cypress/screenshots
+            cypress_tests/cypress/videos
